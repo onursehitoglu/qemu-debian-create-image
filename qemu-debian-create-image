@@ -27,7 +27,7 @@ GRUB_CMDLINE=${GRUB_CMDLINE:=quiet}
 ETH_DEVICE=${ETH_DEVICE:=ens3}
 
 clean_debian() {
-	[ "$MNT_DIR" != "" ] && chroot $MNT_DIR umount /proc/ /sys/ /dev/ /boot/
+	[ "$MNT_DIR" != "" ] && chroot $MNT_DIR umount /proc/ /sys/ /dev/ /boot/efi/ /boot/
 	sleep 1s
 	[ "$MNT_DIR" != "" ] && umount $MNT_DIR
 	sleep 1s
@@ -107,7 +107,8 @@ echo "Connected $FILE to $DISK"
 echo "Partitioning $DISK..."
 sfdisk $DISK -q << EOF || fail "cannot partition $FILE"
 label: dos
-,200M,83,*
+,100M,L,*
+,100M,U,
 ;
 EOF
 
@@ -115,10 +116,14 @@ echo "Creating boot partition..."
 mkfs.ext4 -q ${DISK}p1 || fail "cannot create /boot ext4"
 
 echo "Creating root partition..."
-mkfs.ext4 -q ${DISK}p2 || fail "cannot create / ext4"
+mkfs.ext4 -q ${DISK}p3 || fail "cannot create / ext4"
+
+echo "Creating EFI partition..."
+mkfs.vfat -n EFI ${DISK}p2 || fail "cannot create /boot/efi vfat"
+
 
 echo "Mounting root partition..."
-mount ${DISK}p2 $MNT_DIR || fail "cannot mount /"
+mount ${DISK}p3 $MNT_DIR || fail "cannot mount /"
 
 echo "Installing Debian $RELEASE..."
 debootstrap --include=$INCLUDES $* $RELEASE $MNT_DIR $MIRROR || fail "cannot install $RELEASE into $DISK"
@@ -126,7 +131,8 @@ debootstrap --include=$INCLUDES $* $RELEASE $MNT_DIR $MIRROR || fail "cannot ins
 echo "Configuring system..."
 cat <<EOF > $MNT_DIR/etc/fstab
 /dev/${DISKNAME}1 /boot               ext4    sync 0       2
-/dev/${DISKNAME}2 /                   ext4    errors=remount-ro 0       1
+/dev/${DISKNAME}2 /boot/efi           vfat    sync 0       3
+/dev/${DISKNAME}3 /                   ext4    errors=remount-ro 0       1
 EOF
 
 echo $HOSTNAME > $MNT_DIR/etc/hostname
@@ -153,6 +159,8 @@ fi
 
 mount --bind /dev/ $MNT_DIR/dev || fail "cannot bind /dev"
 chroot $MNT_DIR mount -t ext4 ${DISK}p1 /boot || fail "cannot mount /boot"
+chroot $MNT_DIR mkdir /boot/efi || fail "cannot create /boot/efi"
+chroot $MNT_DIR mount -t vfat ${DISK}p2 /boot/efi || fail "cannot mount /boot/efi"
 chroot $MNT_DIR mount -t proc none /proc || fail "cannot mount /proc"
 chroot $MNT_DIR mount -t sysfs none /sys || fail "cannot mount /sys"
 LANG=C DEBIAN_FRONTEND=noninteractive chroot $MNT_DIR apt-get install -y --force-yes -q $BOOT_PKG || fail "cannot install $BOOT_PKG"
@@ -163,13 +171,14 @@ chroot $MNT_DIR update-grub || fail "cannot update grub"
 chroot $MNT_DIR apt-get clean || fail "unable to clean apt cache"
 
 sed -i "s|${DISK}p1|/dev/${DISKNAME}1|g" $MNT_DIR/boot/grub/grub.cfg
-sed -i "s|${DISK}p2|/dev/${DISKNAME}2|g" $MNT_DIR/boot/grub/grub.cfg
+sed -i "s|${DISK}p3|/dev/${DISKNAME}3|g" $MNT_DIR/boot/grub/grub.cfg
 
 # Set root password
 echo "root:${ROOTPASSWD}" | chroot $MNT_DIR chpasswd
 
 echo "Finishing grub installation..."
-grub-install $DISK --root-directory=$MNT_DIR --modules="biosdisk part_msdos" || fail "cannot reinstall grub"
+#grub-install $DISK --root-directory=$MNT_DIR --modules="biosdisk part_msdos" || fail "cannot reinstall grub"
+grub-install $DISK --root-directory=$MNT_DIR  || fail "cannot reinstall grub"
 
 echo "SUCCESS!"
 clean_debian
